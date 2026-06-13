@@ -1059,3 +1059,30 @@ body.mistake-pulse #view-live .live-orb {
 body.live-focus #view-live #liveSoundTestBtn {
   display: none;
 }
+
+/* Live correction recovery flow */
+.live-correction.recovery {
+  background: linear-gradient(135deg, rgba(254, 243, 199, .96), rgba(255, 247, 237, .96));
+  color: #8a4b0f;
+  border-color: #fbbf24;
+}
+.recovery-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.recovery-actions button {
+  min-height: 42px;
+  padding-inline: 12px;
+}
+.arabic-inline {
+  direction: rtl;
+  display: inline-block;
+  font-family: "Amiri", "Scheherazade New", "Times New Roman", serif;
+  font-size: 1.2em;
+  line-height: 1.6;
+}
+body.live-focus .recovery-actions button {
+  flex: 1 1 calc(50% - 8px);
+}

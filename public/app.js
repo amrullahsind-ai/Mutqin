@@ -678,6 +678,59 @@ function compactArabic(word) {
   return normalizeArabicLetters(word).replace(/\s+/g, '');
 }
 
+const MADD_CARRIERS = new Set(['ا', 'و', 'ي', 'ى']);
+const MADD_MARK_RE = /[\u0653\u0670]/;
+
+function hasMaddLikeSignal(word) {
+  const text = word || '';
+  return MADD_MARK_RE.test(text) || /[آاويى]/.test(normalizeArabicLetters(text));
+}
+
+function removeInsertedMaddCarriers(value) {
+  return compactArabic(value).split('').filter(ch => !MADD_CARRIERS.has(ch)).join('');
+}
+
+function isOnlyExtraMaddCarrier(expected, heard) {
+  const e = compactArabic(expected);
+  const h = compactArabic(heard);
+  if (!e || !h || e === h) return false;
+
+  // Jangan longgarkan kalau ada tambahan selain huruf panjang. Contoh: ن tetap fatal.
+  let i = 0;
+  let j = 0;
+  let skippedMadd = 0;
+  while (i < e.length && j < h.length) {
+    if (e[i] === h[j]) {
+      i += 1;
+      j += 1;
+      continue;
+    }
+    if (MADD_CARRIERS.has(h[j])) {
+      skippedMadd += 1;
+      j += 1;
+      continue;
+    }
+    return false;
+  }
+  while (j < h.length) {
+    if (!MADD_CARRIERS.has(h[j])) return false;
+    skippedMadd += 1;
+    j += 1;
+  }
+  return i === e.length && skippedMadd > 0 && (hasMaddLikeSignal(expected) || skippedMadd <= 2);
+}
+
+function maddAwareCompare(expected, heard) {
+  const e = compactArabic(expected);
+  const h = compactArabic(heard);
+  if (!e || !h) return { match: false, kind: 'empty' };
+  if (e === h) return { match: true, kind: 'exact' };
+  if (isOnlyExtraMaddCarrier(expected, heard)) {
+    return { match: true, kind: 'madd_asr_artifact' };
+  }
+  return { match: false, kind: 'different' };
+}
+
 function isPartialLiveWord(expected, heard) {
   const na = compactArabic(expected);
   const nb = compactArabic(heard);
@@ -721,6 +774,16 @@ function classifyWordMismatch(expected, heard) {
 
   if (!eLetters && !hLetters) return { kind: 'kosong', fatal: false, label: 'belum terdengar' };
 
+  const maddCompare = maddAwareCompare(expected, heard);
+  if (maddCompare.match && maddCompare.kind === 'madd_asr_artifact') {
+    return {
+      kind: 'mad_asr_artifact',
+      fatal: false,
+      label: 'Panjang mad tertangkap beda oleh mic',
+      detail: 'Huruf dasarnya cocok. Perbedaan ini kemungkinan karena mic/browser menulis bacaan panjang sebagai tambahan ا/و/ي. Jangan divonis salah dari transkrip HP; cek panjang mad lewat audio/guru tahsin.'
+    };
+  }
+
   if (eLetters === hLetters) {
     if (expectedHasHarakat && heardHasHarakat && harakatSignature(expected) !== harakatSignature(heard)) {
       return {
@@ -756,12 +819,10 @@ function classifyWordMismatch(expected, heard) {
 }
 
 function canMatchStrictExpectedToHeard(expected, heard) {
-  const e = compactArabic(expected);
-  const h = compactArabic(heard);
-  if (!e || !h) return false;
-  if (e === h) return true;
-  // Hanya untuk potongan final yang benar-benar tersambung tanpa perubahan huruf.
+  const cmp = maddAwareCompare(expected, heard);
+  if (cmp.match) return true;
   // Tidak ada toleransi levenshtein, karena bisa membuat salah huruf/harakat dianggap benar.
+  // Pengecualian hanya untuk artefak mic pada huruf panjang/mad: tambahan ا/و/ي dari ASR tidak divonis salah.
   return false;
 }
 
@@ -784,7 +845,7 @@ function isJoinedWordMatch(expectedPhrase, heard) {
   const e = compactArabic(expectedPhrase);
   const h = compactArabic(heard);
   if (!e || !h) return false;
-  if (liveStrictMode) return e === h;
+  if (liveStrictMode) return e === h || isOnlyExtraMaddCarrier(expectedPhrase, heard);
   return e === h || (e.length >= 6 && h.includes(e)) || (h.length >= 6 && e.includes(h));
 }
 
@@ -818,8 +879,8 @@ function renderTajwidAuditPanel(analysis, mismatch = null) {
         ${renderLetterAudit(next.word)}
       </div>
       <div class="audit-chip-row">
-        <span class="audit-chip warning">Harakat harus dicek manual/ustadz</span>
-        <span class="audit-chip neutral">Huruf tidak dimaklumi otomatis</span>
+        <span class="audit-chip warning">Harakat/mad dicek via audio</span>
+        <span class="audit-chip neutral">Huruf konsonan tetap ketat</span>
       </div>
     `;
     return;
@@ -848,7 +909,7 @@ function renderTajwidAuditPanel(analysis, mismatch = null) {
       <p class="arabic-inline">${escapeHtml(heard || '-')}</p>
     </div>
     <div class="audit-chip-row">
-      <span class="audit-chip">Jangan dianggap benar otomatis</span>
+      <span class="audit-chip">Jangan dianggap salah otomatis kalau hanya mad</span>
       <span class="audit-chip warning">Harakat/makhraj butuh audit audio khusus</span>
     </div>
   `;
@@ -865,14 +926,14 @@ function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
     const heard = spokenWords[si];
     const isLastHeard = si === spokenWords.length - 1;
 
-    if (isWordMatch(expected.norm, heard)) {
+    if (isWordMatch(expected.word, heard)) {
       ti += 1;
       si += 1;
       continue;
     }
 
     // ASR kadang menggabungkan 2 kata jadi 1, atau memecah 1 kata jadi 2.
-    const expectedPair = tokens[ti + 1] ? `${expected.norm} ${tokens[ti + 1].norm}` : '';
+    const expectedPair = tokens[ti + 1] ? `${expected.word} ${tokens[ti + 1].word}` : '';
     if (expectedPair && isJoinedWordMatch(expectedPair, heard)) {
       ti += 2;
       si += 1;
@@ -886,18 +947,18 @@ function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
     }
 
     // Jangan langsung menganggap salah kalau kata terakhir masih potongan/interim.
-    if (isLastHeard && isPartialLiveWord(expected.norm, heard)) {
+    if (isLastHeard && isPartialLiveWord(expected.word, heard)) {
       waitingPartial = true;
       break;
     }
 
-    if (tokens[ti + 1] && isWordMatch(tokens[ti + 1].norm, heard)) {
+    if (tokens[ti + 1] && isWordMatch(tokens[ti + 1].word, heard)) {
       mismatches.push({ type: 'terlewat', expected: expected.word, heard, detail: classifyWordMismatch(expected.word, heard) });
       ti += 2;
       si += 1;
       continue;
     }
-    if (spokenWords[si + 1] && isWordMatch(expected.norm, spokenWords[si + 1])) {
+    if (spokenWords[si + 1] && isWordMatch(expected.word, spokenWords[si + 1])) {
       mismatches.push({ type: 'tambahan', expected: expected.word, heard, detail: classifyWordMismatch(expected.word, heard) });
       si += 2;
       ti += 1;

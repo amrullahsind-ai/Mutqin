@@ -71,3 +71,14 @@ public/styles.css          # UI/UX polished + animasi
 .env.example               # Contoh env Gemini
 render.yaml                # Opsional deploy Render
 ```
+
+
+## Update: Live Setor Alert Sound
+
+Versi ini menambahkan pengingat salah yang lebih terasa:
+- bunyi pendek “teet-teet” saat sistem yakin bacaan melenceng,
+- getaran ringan di perangkat yang mendukung,
+- pulse visual pada mushaf live,
+- tombol **Tes bunyi** di mode Live Setor.
+
+Catatan: bunyi biasanya baru aktif setelah user menekan tombol/berinteraksi dengan halaman, sesuai aturan browser modern.

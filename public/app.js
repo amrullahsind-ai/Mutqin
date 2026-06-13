@@ -47,6 +47,9 @@ let liveLastMatchCount = 0;
 let liveLastProgressAt = Date.now();
 let liveStableMismatchStreak = 0;
 let liveFocusMode = false;
+let liveAudioContext = null;
+let liveLastErrorCue = 0;
+let liveSoundEnabled = true;
 
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -210,6 +213,7 @@ function bindActions() {
   $('liveHintBtn').addEventListener('click', liveHint);
   $('saveLiveSetor').addEventListener('click', saveLiveSetor);
   $('liveFocusBtn').addEventListener('click', () => toggleLiveFocus());
+  $('liveSoundTestBtn').addEventListener('click', testLiveErrorCue);
   window.addEventListener('resize', syncMobileUi);
   $('completeAllReview').addEventListener('click', completeAllDueReviews);
   $('saveSettings').addEventListener('click', saveSettings);
@@ -748,10 +752,83 @@ function renderLiveReveal() {
   liveLastMatchCount = Math.max(liveLastMatchCount, analysis.matchedCount);
 }
 
+function primeLiveAudio() {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return null;
+    if (!liveAudioContext) liveAudioContext = new AudioContext();
+    if (liveAudioContext.state === 'suspended') liveAudioContext.resume().catch(() => {});
+    return liveAudioContext;
+  } catch (err) {
+    return null;
+  }
+}
+
+function playErrorCue() {
+  if (!liveSoundEnabled) return;
+  const now = Date.now();
+  if (now - liveLastErrorCue < 1200) return;
+  liveLastErrorCue = now;
+
+  const ctx = primeLiveAudio();
+  if (!ctx) return;
+
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0.0001, ctx.currentTime);
+  master.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.018);
+  master.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.34);
+  master.connect(ctx.destination);
+
+  const beep = (start, freq, dur) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, ctx.currentTime + start);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+    gain.gain.exponentialRampToValueAtTime(0.8, ctx.currentTime + start + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(ctx.currentTime + start);
+    osc.stop(ctx.currentTime + start + dur + 0.02);
+  };
+
+  // Dua beep pendek: terasa seperti “teet-teet”, tidak terlalu kasar.
+  beep(0, 880, 0.11);
+  beep(0.14, 660, 0.13);
+
+  if (navigator.vibrate) navigator.vibrate([45, 25, 45]);
+}
+
+function triggerMistakePulse() {
+  document.body.classList.remove('mistake-pulse');
+  void document.body.offsetWidth;
+  document.body.classList.add('mistake-pulse');
+  setTimeout(() => document.body.classList.remove('mistake-pulse'), 700);
+}
+
+function testLiveErrorCue() {
+  primeLiveAudio();
+  playErrorCue();
+  triggerMistakePulse();
+  const correction = $('liveCorrection');
+  if (correction) {
+    correction.className = 'live-correction';
+    correction.innerHTML = '<strong>Contoh pengingat:</strong><br>Bunyi teet akan muncul kalau sistem yakin bacaan melenceng.';
+    setTimeout(() => {
+      if (correction.textContent.includes('Contoh pengingat')) correction.className = 'live-correction hidden';
+    }, 2200);
+  }
+}
+
 function maybeSpeakLiveCorrection(message) {
   const now = Date.now();
   if (now - liveLastSpokenWarning < 4500) return;
   liveLastSpokenWarning = now;
+
+  playErrorCue();
+  triggerMistakePulse();
+
   if (!('speechSynthesis' in window)) return;
   window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(message);
@@ -778,6 +855,7 @@ function startLiveSetor() {
   $('liveOrb').className = 'live-orb listening';
   $('startLiveSetor').disabled = true;
   $('stopLiveSetor').disabled = false;
+  primeLiveAudio();
   if (isMobileViewport()) toggleLiveFocus(true);
   renderLiveReveal();
 

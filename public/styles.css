@@ -1032,3 +1032,30 @@ body.live-focus #view-live .liveFocus-primary {
   }
   .nav-stat strong { font-size: 20px; }
 }
+
+
+/* Live Setor error cue: sound + visual pulse */
+body.mistake-pulse #view-live .full-mushaf {
+  animation: mushafMistakePulse .62s ease both;
+}
+body.mistake-pulse #view-live .live-orb {
+  animation: pulse 0.45s ease both, cueOrbWarn .62s ease both;
+}
+@keyframes mushafMistakePulse {
+  0% { box-shadow: inset 0 0 0 1px rgba(214,165,69,.18), 0 20px 50px rgba(116,94,45,.08); transform: translateX(0); }
+  22% { box-shadow: inset 0 0 0 2px rgba(180,35,24,.34), 0 0 0 7px rgba(180,35,24,.08), 0 20px 50px rgba(180,35,24,.14); transform: translateX(-2px); }
+  44% { transform: translateX(2px); }
+  66% { transform: translateX(-1px); }
+  100% { box-shadow: inset 0 0 0 1px rgba(214,165,69,.18), 0 20px 50px rgba(116,94,45,.08); transform: translateX(0); }
+}
+@keyframes cueOrbWarn {
+  0%, 100% { background: var(--warning); }
+  50% { background: var(--danger); box-shadow: 0 0 0 10px rgba(180,35,24,.12), 0 0 34px rgba(180,35,24,.28); }
+}
+#liveSoundTestBtn {
+  background: linear-gradient(135deg, rgba(245,158,11,.15), rgba(13,148,136,.12));
+  color: var(--brand-dark);
+}
+body.live-focus #view-live #liveSoundTestBtn {
+  display: none;
+}

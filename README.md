@@ -90,3 +90,15 @@ Versi ini memperbaiki akurasi Live Setor:
 - Peringatan salah lebih ketat: app tidak langsung menyalahkan jika yang terjadi hanya mic belum menangkap kata terakhir.
 
 Catatan: akurasi tetap bergantung pada browser, mic HP, kebisingan, dan dukungan SpeechRecognition. Untuk validasi tajwid/makhraj serius, tetap perlu guru tahsin.
+
+
+## Update Strict Harakat & Makhraj Beta
+
+Versi ini menambahkan **Mode teliti** pada Live Setor:
+- pencocokan kata dibuat jauh lebih ketat, tanpa toleransi Levenshtein yang berlebihan;
+- kesalahan huruf seperti tambahan/terlewat huruf tidak otomatis dianggap benar;
+- panel audit menampilkan kata rujukan per huruf dan harakat;
+- jika mic HP tidak mengembalikan harakat, aplikasi tidak mengklaim harakat/makhraj benar;
+- koreksi live tetap mengarahkan ulang dari frasa natural, bukan restart dari awal.
+
+Catatan aman: Web Speech API belum bisa memvalidasi makharijul huruf secara final. Fitur makhraj/harakat di build ini bersifat indikator dan alat bantu cek, bukan pengganti guru tahsin.

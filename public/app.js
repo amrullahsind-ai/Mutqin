@@ -57,6 +57,8 @@ let liveLastSpeechAt = 0;
 let liveLastRecognitionConfidence = 1;
 let liveIgnoredLowConfidence = 0;
 let liveLastHeardSnippet = '';
+let liveStrictMode = true;
+let liveLastAudit = null;
 
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -111,6 +113,7 @@ function init() {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
   syncMobileUi();
+  syncStrictButton();
 }
 
 function populateSurahSelect() {
@@ -221,6 +224,7 @@ function bindActions() {
   $('saveLiveSetor').addEventListener('click', saveLiveSetor);
   $('liveFocusBtn').addEventListener('click', () => toggleLiveFocus());
   $('liveSoundTestBtn').addEventListener('click', testLiveErrorCue);
+  $('liveStrictBtn').addEventListener('click', toggleLiveStrictMode);
   window.addEventListener('resize', syncMobileUi);
   $('completeAllReview').addEventListener('click', completeAllDueReviews);
   $('saveSettings').addEventListener('click', saveSettings);
@@ -649,44 +653,206 @@ function wordSimilarity(a, b) {
   return Math.max(0, 1 - levenshtein(na, nb) / maxLen);
 }
 
+
+function hasArabicHarakat(text) {
+  return /[\u064B-\u0652\u0670]/.test(text || '');
+}
+
+function stripHarakatOnly(text) {
+  return (text || '').replace(/[\u064B-\u065F\u0670\u06D6-\u06ED]/g, '');
+}
+
+function normalizeArabicLetters(text) {
+  return stripHarakatOnly(text || '')
+    .replace(/[ٱإأآا]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/[ؤ]/g, 'و')
+    .replace(/[ئ]/g, 'ي')
+    .replace(/ـ/g, '')
+    .replace(/[،؛؟.,!?:;\-ـ()\[\]{}"'“”]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function compactArabic(word) {
+  return normalizeArabicLetters(word).replace(/\s+/g, '');
+}
+
 function isPartialLiveWord(expected, heard) {
-  const na = normalizeArabic(expected);
-  const nb = normalizeArabic(heard);
+  const na = compactArabic(expected);
+  const nb = compactArabic(heard);
   if (!na || !nb || nb.length < 2) return false;
   return na.startsWith(nb) || nb.startsWith(na);
 }
 
-function stripArabicArticle(word) {
-  const w = normalizeArabic(word);
-  return w.startsWith('ال') && w.length > 3 ? w.slice(2) : w;
+function splitArabicLettersWithMarks(word) {
+  const units = [];
+  const clean = (word || '').replace(/ـ/g, '');
+  for (const ch of clean) {
+    if (/[\u064B-\u065F\u0670]/.test(ch)) {
+      if (units.length) units[units.length - 1].marks += ch;
+    } else if (/[\u0621-\u064Aٱ]/.test(ch)) {
+      units.push({ base: ch, marks: '' });
+    }
+  }
+  return units;
 }
 
-function compactArabic(word) {
-  return normalizeArabic(word).replace(/\s+/g, '');
+function harakatSignature(word) {
+  return splitArabicLettersWithMarks(word).map(u => u.marks || '∅').join('|');
+}
+
+function arabicLetterDiff(expected, heard) {
+  const e = compactArabic(expected);
+  const h = compactArabic(heard);
+  const max = Math.max(e.length, h.length);
+  const changes = [];
+  for (let i = 0; i < max; i++) {
+    if (e[i] !== h[i]) changes.push({ index: i, expected: e[i] || '', heard: h[i] || '' });
+  }
+  return changes;
+}
+
+function classifyWordMismatch(expected, heard) {
+  const eLetters = compactArabic(expected);
+  const hLetters = compactArabic(heard);
+  const heardHasHarakat = hasArabicHarakat(heard);
+  const expectedHasHarakat = hasArabicHarakat(expected);
+
+  if (!eLetters && !hLetters) return { kind: 'kosong', fatal: false, label: 'belum terdengar' };
+
+  if (eLetters === hLetters) {
+    if (expectedHasHarakat && heardHasHarakat && harakatSignature(expected) !== harakatSignature(heard)) {
+      return {
+        kind: 'salah_harakat',
+        fatal: true,
+        label: 'Salah harakat',
+        detail: 'Hurufnya sama, tapi harakatnya berbeda.'
+      };
+    }
+    return {
+      kind: heardHasHarakat ? 'tepat' : 'huruf_tepat_harakat_belum_pasti',
+      fatal: false,
+      label: heardHasHarakat ? 'Tepat' : 'Huruf cocok, harakat belum bisa dipastikan',
+      detail: heardHasHarakat ? 'Huruf dan harakat sesuai.' : 'Mic HP biasanya tidak mengembalikan harakat, jadi jangan dianggap valid tahsin.'
+    };
+  }
+
+  const changes = arabicLetterDiff(expected, heard);
+  const missing = changes.filter(c => c.expected && !c.heard).length;
+  const extra = changes.filter(c => !c.expected && c.heard).length;
+  const changed = changes.filter(c => c.expected && c.heard).length;
+  let label = 'Salah huruf';
+  if (extra && !missing && !changed) label = 'Ada huruf tambahan';
+  if (missing && !extra && !changed) label = 'Ada huruf terlewat';
+  if (extra && changed) label = 'Huruf berubah/bertambah';
+  return {
+    kind: 'salah_huruf',
+    fatal: true,
+    label,
+    detail: `Expected: ${expected}. Terdengar: ${heard || '-'}.`,
+    changes
+  };
+}
+
+function canMatchStrictExpectedToHeard(expected, heard) {
+  const e = compactArabic(expected);
+  const h = compactArabic(heard);
+  if (!e || !h) return false;
+  if (e === h) return true;
+  // Hanya untuk potongan final yang benar-benar tersambung tanpa perubahan huruf.
+  // Tidak ada toleransi levenshtein, karena bisa membuat salah huruf/harakat dianggap benar.
+  return false;
 }
 
 function isWordMatch(expected, heard) {
+  if (liveStrictMode) return canMatchStrictExpectedToHeard(expected, heard);
+
   const ne = normalizeArabic(expected);
   const nh = normalizeArabic(heard);
   if (!ne || !nh) return false;
   if (ne === nh) return true;
-
-  // Browser sering menghilangkan/menambah alif-lam di awal kata.
-  const se = stripArabicArticle(ne);
-  const sh = stripArabicArticle(nh);
-  if (se && sh && se === sh) return true;
-
-  // Toleransi untuk hasil ASR yang menyambung/memecah kata.
   const ce = compactArabic(ne);
   const ch = compactArabic(nh);
   if (ce === ch) return true;
-  if ((ce.length >= 4 && ch.includes(ce)) || (ch.length >= 4 && ce.includes(ch))) return true;
-
   const sim = wordSimilarity(ne, nh);
   const len = Math.max(ne.length, nh.length);
-  return sim >= (len <= 4 ? 0.80 : 0.70);
+  return sim >= (len <= 4 ? 0.86 : 0.78);
 }
 
+function isJoinedWordMatch(expectedPhrase, heard) {
+  const e = compactArabic(expectedPhrase);
+  const h = compactArabic(heard);
+  if (!e || !h) return false;
+  if (liveStrictMode) return e === h;
+  return e === h || (e.length >= 6 && h.includes(e)) || (h.length >= 6 && e.includes(h));
+}
+
+function renderLetterAudit(word, badIndexes = []) {
+  const units = splitArabicLettersWithMarks(word);
+  if (!units.length) return '<span class="analysis-empty">-</span>';
+  const bad = new Set(badIndexes || []);
+  return `<div class="letter-audit">${units.map((u, i) => {
+    const cls = bad.has(i) ? 'bad' : (u.marks ? 'ok' : 'warn');
+    return `<span class="letter-box ${cls}">${escapeHtml(u.base + u.marks)}</span>`;
+  }).join('')}</div>`;
+}
+
+function renderTajwidAuditPanel(analysis, mismatch = null) {
+  const box = $('tajwidAudit');
+  if (!box) return;
+  if (!liveStrictMode) {
+    box.className = 'tajwid-audit hidden';
+    return;
+  }
+  const tokens = analysis?.tokens || liveTokens();
+  const next = analysis?.nextToken;
+  const issue = mismatch || analysis?.mismatches?.[analysis.mismatches.length - 1] || null;
+  if (!issue && next) {
+    box.className = 'tajwid-audit';
+    box.innerHTML = `
+      <h4>Mode teliti aktif</h4>
+      <p><strong>Catatan penting:</strong> mic HP/Web Speech belum cukup untuk memvalidasi makhraj dan harakat secara final. App hanya membuat huruf lebih ketat dan menampilkan harakat rujukan agar dicek pelan.</p>
+      <div class="audit-row">
+        <span class="audit-label">Kata berikutnya</span>
+        ${renderLetterAudit(next.word)}
+      </div>
+      <div class="audit-chip-row">
+        <span class="audit-chip warning">Harakat harus dicek manual/ustadz</span>
+        <span class="audit-chip neutral">Huruf tidak dimaklumi otomatis</span>
+      </div>
+    `;
+    return;
+  }
+  if (!issue) {
+    box.className = 'tajwid-audit good';
+    box.innerHTML = '<h4>Mode teliti aktif</h4><p>Belum ada indikasi kesalahan huruf. Harakat tetap belum bisa divalidasi final dari mic HP.</p>';
+    return;
+  }
+  const expected = issue.expected || next?.word || '';
+  const heard = issue.heard || liveLastHeardSnippet || '';
+  const cls = classifyWordMismatch(expected, heard);
+  const badIdx = (cls.changes || []).filter(c => c.expected && c.heard && c.expected !== c.heard).map(c => c.index);
+  const missedIdx = (cls.changes || []).filter(c => c.expected && !c.heard).map(c => c.index);
+  const allBad = [...new Set([...badIdx, ...missedIdx])];
+  box.className = 'tajwid-audit';
+  box.innerHTML = `
+    <h4>${escapeHtml(cls.label)}</h4>
+    <p>${escapeHtml(cls.detail || 'Ada bagian yang perlu dicek ulang.')}</p>
+    <div class="audit-row">
+      <span class="audit-label">Seharusnya</span>
+      ${renderLetterAudit(expected, allBad)}
+    </div>
+    <div class="audit-row">
+      <span class="audit-label">Yang tertangkap mic</span>
+      <p class="arabic-inline">${escapeHtml(heard || '-')}</p>
+    </div>
+    <div class="audit-chip-row">
+      <span class="audit-chip">Jangan dianggap benar otomatis</span>
+      <span class="audit-chip warning">Harakat/makhraj butuh audit audio khusus</span>
+    </div>
+  `;
+}
 function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
   const tokens = liveTokens();
   let ti = Math.max(0, Math.min(startTokenIndex, tokens.length));
@@ -707,13 +873,13 @@ function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
 
     // ASR kadang menggabungkan 2 kata jadi 1, atau memecah 1 kata jadi 2.
     const expectedPair = tokens[ti + 1] ? `${expected.norm} ${tokens[ti + 1].norm}` : '';
-    if (expectedPair && isWordMatch(expectedPair, heard)) {
+    if (expectedPair && isJoinedWordMatch(expectedPair, heard)) {
       ti += 2;
       si += 1;
       continue;
     }
     const heardPair = spokenWords[si + 1] ? `${heard} ${spokenWords[si + 1]}` : '';
-    if (heardPair && isWordMatch(expected.norm, heardPair)) {
+    if (heardPair && isJoinedWordMatch(expected.norm, heardPair)) {
       ti += 1;
       si += 2;
       continue;
@@ -726,20 +892,20 @@ function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
     }
 
     if (tokens[ti + 1] && isWordMatch(tokens[ti + 1].norm, heard)) {
-      mismatches.push({ type: 'terlewat', expected: expected.word, heard });
+      mismatches.push({ type: 'terlewat', expected: expected.word, heard, detail: classifyWordMismatch(expected.word, heard) });
       ti += 2;
       si += 1;
       continue;
     }
     if (spokenWords[si + 1] && isWordMatch(expected.norm, spokenWords[si + 1])) {
-      mismatches.push({ type: 'tambahan', expected: expected.word, heard });
+      mismatches.push({ type: 'tambahan', expected: expected.word, heard, detail: classifyWordMismatch(expected.word, heard) });
       si += 2;
       ti += 1;
       continue;
     }
 
     // Untuk live mode, satu kata yang belum cocok belum cukup untuk memvonis salah.
-    mismatches.push({ type: 'beda', expected: expected.word, heard });
+    mismatches.push({ type: 'beda', expected: expected.word, heard, detail: classifyWordMismatch(expected.word, heard) });
     si += 1;
     if (mismatches.length > 8) break;
   }
@@ -886,6 +1052,7 @@ function renderLiveReveal() {
       analysis = analyzeLiveTranscript(liveFinalText);
       $('liveCorrection').className = 'live-correction good';
       $('liveCorrection').textContent = 'Sudah kembali ke jalur. Lanjutkan bacaan dari titik berikutnya.';
+      renderTajwidAuditPanel(analysis);
     }
   }
 
@@ -896,6 +1063,7 @@ function renderLiveReveal() {
     $('liveReveal').innerHTML = '<p class="analysis-empty">Mulai live setoran. Mushaf live akan terbuka bertahap mengikuti bacaanmu.</p>';
     $('liveExpected').textContent = 'Mulai dari ayat pertama. Kata berikutnya tetap tersembunyi sampai terbaca.';
     $('liveModePill').textContent = 'Standby';
+    renderTajwidAuditPanel(analysis);
     return;
   }
 
@@ -928,12 +1096,18 @@ function renderLiveReveal() {
   const progress = tokens.length ? Math.round(analysis.matchedCount / tokens.length * 100) : 0;
   $('liveModePill').textContent = analysis.finished ? 'Selesai' : `${progress}% terbaca`;
   $('liveExpected').textContent = analysis.nextToken ? 'Lanjutkan bacaan. Mushaf akan terus terbuka mengikuti setoranmu.' : 'Setoran bagian ini selesai.';
+  renderTajwidAuditPanel(analysis);
 
   const correction = $('liveCorrection');
   if (analysis.finished) {
     correction.className = 'live-correction good';
     correction.textContent = 'Bagian setoran ini sudah terbaca sampai akhir. Kamu bisa simpan hasil atau setor ulang.';
     $('liveOrb').className = 'live-orb good';
+    const audit = $('tajwidAudit');
+    if (audit) {
+      audit.className = 'tajwid-audit good';
+      audit.innerHTML = '<h4>Setoran selesai</h4><p>Huruf yang tertangkap sudah melewati target teks. Untuk makhraj/harakat final tetap butuh audit audio/guru tahsin.</p>';
+    }
     return;
   }
 
@@ -944,18 +1118,23 @@ function renderLiveReveal() {
   }
 
   const stableAnalysis = analyzeLiveTranscript(liveFinalText.trim());
-  const stalledLongEnough = Date.now() - liveLastProgressAt > 2600;
+  const stalledLongEnough = Date.now() - liveLastProgressAt > (liveStrictMode ? 2100 : 2600);
   const extraSpokenAfterMatch = stableAnalysis.spokenWords.length - stableAnalysis.matchedCount;
-  const hasStableEvidence = stableAnalysis.spokenWords.length >= Math.max(4, stableAnalysis.matchedCount + 2);
-  // Jangan vonis salah hanya karena ASR belum menangkap satu kata terakhir.
-  // Harus ada minimal dua kata tambahan yang melenceng setelah titik cocok terakhir.
-  const recognitionLikelyClear = liveLastRecognitionConfidence >= 0.38 || stableAnalysis.mismatches.length >= 3;
+  const fatalMismatchCount = stableAnalysis.mismatches.filter(m => m.detail?.fatal).length;
+  const hasStableEvidence = liveStrictMode
+    ? stableAnalysis.spokenWords.length >= Math.max(2, stableAnalysis.matchedCount + 1)
+    : stableAnalysis.spokenWords.length >= Math.max(4, stableAnalysis.matchedCount + 2);
+  // Strict mode: salah huruf/harakat tidak boleh dimaklumi oleh similarity.
+  // Relaxed mode tetap menunggu lebih banyak bukti agar tidak terlalu rewel di mic HP.
+  const recognitionLikelyClear = liveStrictMode
+    ? (liveLastRecognitionConfidence >= 0.28 || fatalMismatchCount >= 1)
+    : (liveLastRecognitionConfidence >= 0.38 || stableAnalysis.mismatches.length >= 3);
   const severeMismatch = !stableAnalysis.waitingPartial
     && recognitionLikelyClear
     && stalledLongEnough
     && hasStableEvidence
-    && stableAnalysis.mismatches.length >= 2
-    && extraSpokenAfterMatch >= 2
+    && stableAnalysis.mismatches.length >= (liveStrictMode ? 1 : 2)
+    && extraSpokenAfterMatch >= (liveStrictMode ? 1 : 2)
     && stableAnalysis.matchedCount <= liveLastMatchCount;
 
   if (severeMismatch) liveStableMismatchStreak += 1;
@@ -967,6 +1146,7 @@ function renderLiveReveal() {
       Aku belum masukkan hasil tadi karena confidence mic rendah. Coba dekatkan HP atau baca ulang frasa terakhir pelan-pelan.
       <br><small>Yang terakhir terdengar: ${escapeHtml(liveLastHeardSnippet || '-')}</small>`;
     $('liveOrb').className = 'live-orb listening';
+    renderTajwidAuditPanel(stableAnalysis);
   } else if (liveRecovery?.active) {
     const checkpointPhrase = recoveryPhrase();
     correction.className = 'live-correction recovery';
@@ -977,6 +1157,7 @@ function renderLiveReveal() {
         <button class="success" onclick="window.Mutqin.acceptLivePoint()">Saya benar, lanjut</button>
       </div>`;
     $('liveOrb').className = 'live-orb warn';
+    renderTajwidAuditPanel(stableAnalysis);
   } else if (stalledLongEnough && stableAnalysis.nextToken && stableAnalysis.mismatches.length === 0 && stableAnalysis.matchedCount > 0 && stableAnalysis.matchedCount <= liveLastMatchCount) {
     const checkpoint = naturalCheckpointIndex(stableAnalysis.matchedCount);
     correction.className = 'live-correction listen';
@@ -984,17 +1165,21 @@ function renderLiveReveal() {
       Coba ulangi dari awal frasa <span class="arabic-inline">${escapeHtml(livePhraseFrom(checkpoint, 5))}</span>.
       <br><small>Ini biasanya terjadi kalau browser belum menangkap kata terakhir, misalnya الرحيم.</small>`;
     $('liveOrb').className = 'live-orb listening';
+    renderTajwidAuditPanel(stableAnalysis);
   } else if (liveStableMismatchStreak >= 2) {
     enterLiveRecovery(stableAnalysis);
     const m = stableAnalysis.mismatches[stableAnalysis.mismatches.length - 1];
+    const verdict = m.detail || classifyWordMismatch(m.expected || '', m.heard || '');
     const checkpointPhrase = recoveryPhrase();
     correction.className = 'live-correction recovery';
-    correction.innerHTML = `<strong>Kemungkinan melenceng.</strong><br>
-      Yang terdengar: ${escapeHtml(m.heard || '-')}. Ulangi dari awal frasa <span class="arabic-inline">${escapeHtml(checkpointPhrase)}</span>.
+    correction.innerHTML = `<strong>${escapeHtml(verdict.label || 'Kemungkinan melenceng')}.</strong><br>
+      Seharusnya <span class="arabic-inline">${escapeHtml(m.expected || '-')}</span>, tertangkap <span class="arabic-inline">${escapeHtml(m.heard || '-')}</span>.<br>
+      Ulangi dari awal frasa <span class="arabic-inline">${escapeHtml(checkpointPhrase)}</span>.
       <div class="recovery-actions">
         <button class="ghost" onclick="window.Mutqin.rewindLivePoint()">Ulang dari sini</button>
         <button class="success" onclick="window.Mutqin.acceptLivePoint()">Saya benar, lanjut</button>
       </div>`;
+    renderTajwidAuditPanel(stableAnalysis, m);
     $('liveOrb').className = 'live-orb warn';
     maybeSpeakLiveCorrection('Stop sebentar. Ulangi dari awal frasa terakhir. Tidak perlu dari awal setoran.');
   } else {
@@ -1028,9 +1213,10 @@ function evaluateSpeechCandidate(transcript) {
     ? analyzeLiveSpokenWords(spokenTokens(proposedText).slice(liveRecovery.spokenStart), liveRecovery.checkpoint)
     : analyzeLiveTranscript(proposedText);
   const progress = analysis.matchedCount - baseAnalysis.matchedCount;
-  const mismatchPenalty = analysis.mismatches.length * 1.15;
+  const fatalCount = analysis.mismatches.filter(m => m.detail?.fatal).length;
+  const mismatchPenalty = analysis.mismatches.length * (liveStrictMode ? 2.4 : 1.15) + fatalCount * (liveStrictMode ? 3.5 : 0.8);
   const waitBonus = analysis.waitingPartial ? 0.35 : 0;
-  return { analysis, baseAnalysis, progress, mismatchPenalty, waitBonus, candidateText: candidate };
+  return { analysis, baseAnalysis, progress, mismatchPenalty, waitBonus, fatalCount, candidateText: candidate };
 }
 
 function chooseBestSpeechCandidate(result) {
@@ -1126,6 +1312,25 @@ function testLiveErrorCue() {
       if (correction.textContent.includes('Contoh pengingat')) correction.className = 'live-correction hidden';
     }, 2200);
   }
+}
+
+
+function toggleLiveStrictMode() {
+  liveStrictMode = !liveStrictMode;
+  const btn = $('liveStrictBtn');
+  if (btn) {
+    btn.textContent = liveStrictMode ? 'Mode teliti: ON' : 'Mode teliti: OFF';
+    btn.classList.toggle('active', liveStrictMode);
+  }
+  liveLastAudit = null;
+  renderLiveReveal();
+}
+
+function syncStrictButton() {
+  const btn = $('liveStrictBtn');
+  if (!btn) return;
+  btn.textContent = liveStrictMode ? 'Mode teliti: ON' : 'Mode teliti: OFF';
+  btn.classList.toggle('active', liveStrictMode);
 }
 
 function maybeSpeakLiveCorrection(message) {

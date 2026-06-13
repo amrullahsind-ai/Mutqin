@@ -15,3 +15,14 @@ Project ini sudah disiapkan untuk Vercel. Backend Express diekspor dari `server.
 5. Deploy.
 
 Tanpa `GEMINI_API_KEY`, aplikasi tetap bisa dibuka. Fitur lokal dan Live Setor V2 browser tetap bisa dicoba, tapi Transkrip Gemini, Analisis Gemini, dan Coach API belum aktif.
+
+
+## Update: Natural Checkpoint Fix
+- Live Setor sekarang tidak lagi meminta user mengulang dari potongan yang menggantung seperti “الله الرحمن”.
+- Jika error terjadi di awal ayat/frasa pendek, aplikasi akan mengarahkan ulang dari awal frasa/ayat, misalnya “بسم الله الرحمن الرحيم”.
+- Jika browser hanya belum menangkap kata terakhir, aplikasi menandainya sebagai “belum tertangkap”, bukan langsung salah.
+- Recovery flow tetap melanjutkan dari checkpoint, bukan restart seluruh setoran.
+
+## Listening Accuracy Fix
+
+Versi ini menambahkan pemilihan kandidat transkrip terbaik, confidence filter, toleransi pemisahan/penggabungan kata, dan normalisasi bacaan Latin umum untuk meningkatkan akurasi Live Setor di mobile.

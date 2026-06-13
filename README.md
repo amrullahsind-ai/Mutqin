@@ -71,3 +71,22 @@ public/styles.css          # UI/UX polished + animasi
 .env.example               # Contoh env Gemini
 render.yaml                # Opsional deploy Render
 ```
+
+
+## Update: Natural Checkpoint Fix
+- Live Setor sekarang tidak lagi meminta user mengulang dari potongan yang menggantung seperti “الله الرحمن”.
+- Jika error terjadi di awal ayat/frasa pendek, aplikasi akan mengarahkan ulang dari awal frasa/ayat, misalnya “بسم الله الرحمن الرحيم”.
+- Jika browser hanya belum menangkap kata terakhir, aplikasi menandainya sebagai “belum tertangkap”, bukan langsung salah.
+- Recovery flow tetap melanjutkan dari checkpoint, bukan restart seluruh setoran.
+
+## Update: Listening Accuracy Fix
+
+Versi ini memperbaiki akurasi Live Setor:
+
+- SpeechRecognition memakai beberapa alternatif hasil dengar (`maxAlternatives = 5`) lalu memilih kandidat yang paling cocok dengan ayat.
+- Hasil dengan confidence rendah tidak langsung dimasukkan ke transkrip final jika tidak membuat progres.
+- Sistem lebih toleran terhadap alif-lam yang hilang/terbaca berlebih, kata yang tersambung, dan kata yang terpecah.
+- Ada normalisasi beberapa bacaan Latin umum seperti “bismillahirrahmanirrahim” menjadi teks Arab yang cocok dengan mushaf.
+- Peringatan salah lebih ketat: app tidak langsung menyalahkan jika yang terjadi hanya mic belum menangkap kata terakhir.
+
+Catatan: akurasi tetap bergantung pada browser, mic HP, kebisingan, dan dukungan SpeechRecognition. Untuk validasi tajwid/makhraj serius, tetap perlu guru tahsin.

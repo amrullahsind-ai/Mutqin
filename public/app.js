@@ -54,6 +54,9 @@ let liveRecovery = null;
 let liveShouldListen = false;
 let liveRestartTimer = null;
 let liveLastSpeechAt = 0;
+let liveLastRecognitionConfidence = 1;
+let liveIgnoredLowConfidence = 0;
+let liveLastHeardSnippet = '';
 
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -576,8 +579,46 @@ function normalizeLetterName(word) {
   return aliases[w] || w;
 }
 
+function convertLatinQuranHints(text) {
+  let out = String(text || '');
+  const replacements = [
+    [/bismillahir\s*(rahman|rohman)ir\s*(rahim|rohim)/gi, ' بسم الله الرحمن الرحيم '],
+    [/bismillah/gi, ' بسم الله '],
+    [/bismi\s+llah/gi, ' بسم الله '],
+    [/allahu|allah|llah/gi, ' الله '],
+    [/ar\s*(rahman|rohman)|arrohman|arrahman/gi, ' الرحمن '],
+    [/ar\s*(rahim|rohim)|arrohim|arrahim/gi, ' الرحيم '],
+    [/alhamdu\s*lillah|alhamdulillahi|hamdulillah/gi, ' الحمد لله '],
+    [/rabbil/gi, ' رب '],
+    [/alamin|aalamin/gi, ' العالمين '],
+    [/maliki|maaliki/gi, ' مالك '],
+    [/yaumiddin|yaumid\s*din|yaumuddin/gi, ' يوم الدين '],
+    [/iyyaka|iyaka/gi, ' اياك '],
+    [/na['’]?budu|nabudu/gi, ' نعبد '],
+    [/nasta['’]?in|nastain/gi, ' نستعين '],
+    [/ihdina/gi, ' اهدنا '],
+    [/sirat(al)?|shirat(al)?/gi, ' الصراط '],
+    [/mustaqim/gi, ' المستقيم '],
+    [/alladzina|alladhina|ladzina|ladhina/gi, ' الذين '],
+    [/an['’]?amta|anamta/gi, ' انعمت '],
+    [/alaihim|alayhim/gi, ' عليهم '],
+    [/ghairil|ghayril/gi, ' غير '],
+    [/maghdhubi|maghdubi/gi, ' المغضوب '],
+    [/walad\s*dhallin|waladdallin|dallin|dhallin/gi, ' الضالين ']
+  ];
+  replacements.forEach(([pattern, value]) => { out = out.replace(pattern, value); });
+  return out;
+}
+
+function normalizeSpokenText(text) {
+  return convertLatinQuranHints(text)
+    .replace(/[|/\\]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function spokenTokens(text) {
-  const raw = normalizeArabic(text).split(' ').filter(Boolean).map(normalizeLetterName);
+  const raw = normalizeArabic(normalizeSpokenText(text)).split(' ').filter(Boolean).map(normalizeLetterName);
   const out = [];
   for (let i = 0; i < raw.length;) {
     let matched = false;
@@ -615,13 +656,35 @@ function isPartialLiveWord(expected, heard) {
   return na.startsWith(nb) || nb.startsWith(na);
 }
 
+function stripArabicArticle(word) {
+  const w = normalizeArabic(word);
+  return w.startsWith('ال') && w.length > 3 ? w.slice(2) : w;
+}
+
+function compactArabic(word) {
+  return normalizeArabic(word).replace(/\s+/g, '');
+}
+
 function isWordMatch(expected, heard) {
   const ne = normalizeArabic(expected);
   const nh = normalizeArabic(heard);
+  if (!ne || !nh) return false;
   if (ne === nh) return true;
+
+  // Browser sering menghilangkan/menambah alif-lam di awal kata.
+  const se = stripArabicArticle(ne);
+  const sh = stripArabicArticle(nh);
+  if (se && sh && se === sh) return true;
+
+  // Toleransi untuk hasil ASR yang menyambung/memecah kata.
+  const ce = compactArabic(ne);
+  const ch = compactArabic(nh);
+  if (ce === ch) return true;
+  if ((ce.length >= 4 && ch.includes(ce)) || (ch.length >= 4 && ce.includes(ch))) return true;
+
   const sim = wordSimilarity(ne, nh);
   const len = Math.max(ne.length, nh.length);
-  return sim >= (len <= 4 ? 0.84 : 0.74);
+  return sim >= (len <= 4 ? 0.80 : 0.70);
 }
 
 function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
@@ -639,6 +702,20 @@ function analyzeLiveSpokenWords(spokenWords, startTokenIndex = 0) {
     if (isWordMatch(expected.norm, heard)) {
       ti += 1;
       si += 1;
+      continue;
+    }
+
+    // ASR kadang menggabungkan 2 kata jadi 1, atau memecah 1 kata jadi 2.
+    const expectedPair = tokens[ti + 1] ? `${expected.norm} ${tokens[ti + 1].norm}` : '';
+    if (expectedPair && isWordMatch(expectedPair, heard)) {
+      ti += 2;
+      si += 1;
+      continue;
+    }
+    const heardPair = spokenWords[si + 1] ? `${heard} ${spokenWords[si + 1]}` : '';
+    if (heardPair && isWordMatch(expected.norm, heardPair)) {
+      ti += 1;
+      si += 2;
       continue;
     }
 
@@ -687,16 +764,74 @@ function canonicalLiveTextUntil(count) {
   return liveTokens().slice(0, Math.max(0, count)).map(t => t.word).join(' ');
 }
 
-function livePhraseFrom(index, length = 3) {
-  return liveTokens().slice(Math.max(0, index), Math.max(0, index) + length).map(t => t.word).join(' ');
+function ayahStartIndexFor(tokenIndex) {
+  const tokens = liveTokens();
+  if (!tokens.length) return 0;
+  const safeIndex = Math.max(0, Math.min(tokenIndex, tokens.length - 1));
+  const ayahNum = tokens[safeIndex]?.ayah;
+  const start = tokens.findIndex(t => t.ayah === ayahNum);
+  return start < 0 ? 0 : start;
+}
+
+function ayahEndIndexFor(tokenIndex) {
+  const tokens = liveTokens();
+  if (!tokens.length) return 0;
+  const safeIndex = Math.max(0, Math.min(tokenIndex, tokens.length - 1));
+  const ayahNum = tokens[safeIndex]?.ayah;
+  let end = safeIndex;
+  for (let i = safeIndex; i < tokens.length; i++) {
+    if (tokens[i].ayah !== ayahNum) break;
+    end = i;
+  }
+  return end;
+}
+
+function isAwkwardPhraseStart(token) {
+  const w = normalizeArabic(token?.word || '');
+  // Jangan suruh user mulai dari alif-lam/isim yang terasa menggantung seperti الرحمن/الرحيم.
+  return !w || w.startsWith('ال') || ['الله','اللهم','رب','ربنا'].includes(w);
+}
+
+function naturalCheckpointIndex(errorIndex) {
+  const tokens = liveTokens();
+  if (!tokens.length) return 0;
+  const target = Math.max(0, Math.min(errorIndex, tokens.length - 1));
+  const ayahStart = ayahStartIndexFor(target);
+  const withinAyah = target - ayahStart;
+
+  // Kalau kesalahan terjadi di awal ayat/frasa pendek seperti basmalah,
+  // balik ke awal ayat/frasa, bukan ke tengah seperti "الله الرحمن".
+  if (withinAyah <= 5) return ayahStart;
+
+  // Untuk ayat panjang, mundur beberapa kata agar nyambung, lalu snap ke titik yang natural.
+  let checkpoint = Math.max(ayahStart, target - 4);
+  while (checkpoint > ayahStart && isAwkwardPhraseStart(tokens[checkpoint])) checkpoint -= 1;
+
+  // Kalau setelah disnap masih terlalu dekat dengan error, mundur lagi biar user punya ancang-ancang.
+  if (target - checkpoint < 2) checkpoint = Math.max(ayahStart, checkpoint - 2);
+  return checkpoint;
+}
+
+function livePhraseFrom(index, length = 5) {
+  const tokens = liveTokens();
+  if (!tokens.length) return '';
+  const start = Math.max(0, Math.min(index, tokens.length - 1));
+  const ayahEnd = ayahEndIndexFor(start);
+  const end = Math.min(ayahEnd + 1, start + length);
+  return tokens.slice(start, end).map(t => t.word).join(' ');
+}
+
+function recoveryPhrase() {
+  return livePhraseFrom(liveRecovery?.checkpoint || 0, 5);
 }
 
 function enterLiveRecovery(stableAnalysis) {
-  const checkpoint = Math.max(0, Math.min(liveLastMatchCount, stableAnalysis.matchedCount) - 2);
+  const errorIndex = Math.max(liveLastMatchCount, stableAnalysis.matchedCount);
+  const checkpoint = naturalCheckpointIndex(errorIndex);
   liveRecovery = {
     active: true,
     checkpoint,
-    errorIndex: Math.max(liveLastMatchCount, stableAnalysis.matchedCount),
+    errorIndex,
     spokenStart: stableAnalysis.spokenWords.length,
     createdAt: Date.now()
   };
@@ -717,7 +852,8 @@ function clearLiveRecoveryTo(matchedCount) {
 function acceptLivePoint() {
   const text = `${liveFinalText} ${liveInterimText}`.trim();
   const analysis = analyzeLiveTranscript(text, liveRecovery?.checkpoint || 0);
-  const next = Math.min(analysis.tokens.length, Math.max(liveLastMatchCount + 1, analysis.matchedCount + 1));
+  const acceptedIndex = liveRecovery?.active ? (liveRecovery.errorIndex + 1) : (liveLastMatchCount + 1);
+  const next = Math.min(analysis.tokens.length, Math.max(acceptedIndex, analysis.matchedCount + 1));
   clearLiveRecoveryTo(next);
   $('liveCorrection').className = 'live-correction hidden';
   renderLiveReveal();
@@ -725,10 +861,10 @@ function acceptLivePoint() {
 }
 
 function rewindLivePoint() {
-  const checkpoint = liveRecovery?.checkpoint ?? Math.max(0, liveLastMatchCount - 2);
+  const checkpoint = liveRecovery?.checkpoint ?? naturalCheckpointIndex(liveLastMatchCount);
   clearLiveRecoveryTo(checkpoint);
   $('liveCorrection').className = 'live-correction';
-  $('liveCorrection').innerHTML = `<strong>Ulang dari sini:</strong><br><span class="arabic-inline">${escapeHtml(livePhraseFrom(checkpoint, 3))}</span><br><small>Setelah potongan ini terbaca benar, sistem lanjut otomatis.</small>`;
+  $('liveCorrection').innerHTML = `<strong>Ulang dari awal frasa:</strong><br><span class="arabic-inline">${escapeHtml(livePhraseFrom(checkpoint, 5))}</span><br><small>Ini titik natural agar bacaan nyambung. Tidak perlu mulai dari awal setoran.</small>`;
   renderLiveReveal();
   if (liveShouldListen && !liveRecognition) scheduleLiveRestart('Menyambung mic dari titik aman…');
 }
@@ -804,45 +940,123 @@ function renderLiveReveal() {
   if (analysis.matchedCount > liveLastMatchCount) {
     liveLastProgressAt = Date.now();
     liveStableMismatchStreak = 0;
+    liveIgnoredLowConfidence = 0;
   }
 
   const stableAnalysis = analyzeLiveTranscript(liveFinalText.trim());
-  const stalledLongEnough = Date.now() - liveLastProgressAt > 2200;
-  const hasStableEvidence = stableAnalysis.spokenWords.length >= Math.max(3, stableAnalysis.matchedCount + 2);
-  const severeMismatch = !stableAnalysis.waitingPartial && stalledLongEnough && hasStableEvidence && stableAnalysis.mismatches.length >= 2 && stableAnalysis.matchedCount <= liveLastMatchCount;
+  const stalledLongEnough = Date.now() - liveLastProgressAt > 2600;
+  const extraSpokenAfterMatch = stableAnalysis.spokenWords.length - stableAnalysis.matchedCount;
+  const hasStableEvidence = stableAnalysis.spokenWords.length >= Math.max(4, stableAnalysis.matchedCount + 2);
+  // Jangan vonis salah hanya karena ASR belum menangkap satu kata terakhir.
+  // Harus ada minimal dua kata tambahan yang melenceng setelah titik cocok terakhir.
+  const recognitionLikelyClear = liveLastRecognitionConfidence >= 0.38 || stableAnalysis.mismatches.length >= 3;
+  const severeMismatch = !stableAnalysis.waitingPartial
+    && recognitionLikelyClear
+    && stalledLongEnough
+    && hasStableEvidence
+    && stableAnalysis.mismatches.length >= 2
+    && extraSpokenAfterMatch >= 2
+    && stableAnalysis.matchedCount <= liveLastMatchCount;
 
   if (severeMismatch) liveStableMismatchStreak += 1;
   else liveStableMismatchStreak = 0;
 
-  if (liveRecovery?.active) {
-    const checkpointPhrase = livePhraseFrom(liveRecovery.checkpoint, 3);
+  if (liveIgnoredLowConfidence > 0 && Date.now() - liveLastSpeechAt < 4200 && !liveRecovery?.active) {
+    correction.className = 'live-correction listen';
+    correction.innerHTML = `<strong>Suara belum cukup jelas.</strong><br>
+      Aku belum masukkan hasil tadi karena confidence mic rendah. Coba dekatkan HP atau baca ulang frasa terakhir pelan-pelan.
+      <br><small>Yang terakhir terdengar: ${escapeHtml(liveLastHeardSnippet || '-')}</small>`;
+    $('liveOrb').className = 'live-orb listening';
+  } else if (liveRecovery?.active) {
+    const checkpointPhrase = recoveryPhrase();
     correction.className = 'live-correction recovery';
     correction.innerHTML = `<strong>Kembali ke titik aman.</strong><br>
-      Ulangi dari <span class="arabic-inline">${escapeHtml(checkpointPhrase)}</span>. Tidak perlu mulai dari awal.
+      Ulangi dari awal frasa <span class="arabic-inline">${escapeHtml(checkpointPhrase)}</span>. Tidak perlu mulai dari awal setoran.
       <div class="recovery-actions">
         <button class="ghost" onclick="window.Mutqin.rewindLivePoint()">Ulang dari sini</button>
         <button class="success" onclick="window.Mutqin.acceptLivePoint()">Saya benar, lanjut</button>
       </div>`;
     $('liveOrb').className = 'live-orb warn';
+  } else if (stalledLongEnough && stableAnalysis.nextToken && stableAnalysis.mismatches.length === 0 && stableAnalysis.matchedCount > 0 && stableAnalysis.matchedCount <= liveLastMatchCount) {
+    const checkpoint = naturalCheckpointIndex(stableAnalysis.matchedCount);
+    correction.className = 'live-correction listen';
+    correction.innerHTML = `<strong>Belum tertangkap, bukan pasti salah.</strong><br>
+      Coba ulangi dari awal frasa <span class="arabic-inline">${escapeHtml(livePhraseFrom(checkpoint, 5))}</span>.
+      <br><small>Ini biasanya terjadi kalau browser belum menangkap kata terakhir, misalnya الرحيم.</small>`;
+    $('liveOrb').className = 'live-orb listening';
   } else if (liveStableMismatchStreak >= 2) {
     enterLiveRecovery(stableAnalysis);
     const m = stableAnalysis.mismatches[stableAnalysis.mismatches.length - 1];
-    const checkpointPhrase = livePhraseFrom(liveRecovery.checkpoint, 3);
+    const checkpointPhrase = recoveryPhrase();
     correction.className = 'live-correction recovery';
     correction.innerHTML = `<strong>Kemungkinan melenceng.</strong><br>
-      Yang terdengar: ${escapeHtml(m.heard || '-')}. Ulangi dari <span class="arabic-inline">${escapeHtml(checkpointPhrase)}</span>.
+      Yang terdengar: ${escapeHtml(m.heard || '-')}. Ulangi dari awal frasa <span class="arabic-inline">${escapeHtml(checkpointPhrase)}</span>.
       <div class="recovery-actions">
         <button class="ghost" onclick="window.Mutqin.rewindLivePoint()">Ulang dari sini</button>
         <button class="success" onclick="window.Mutqin.acceptLivePoint()">Saya benar, lanjut</button>
       </div>`;
     $('liveOrb').className = 'live-orb warn';
-    maybeSpeakLiveCorrection('Stop sebentar. Ulangi dari potongan terakhir. Tidak perlu dari awal.');
+    maybeSpeakLiveCorrection('Stop sebentar. Ulangi dari awal frasa terakhir. Tidak perlu dari awal setoran.');
   } else {
     correction.className = 'live-correction hidden';
     if ($('liveOrb').classList.contains('listening')) $('liveOrb').className = 'live-orb listening';
   }
   liveLastMatchCount = Math.max(liveLastMatchCount, analysis.matchedCount);
   updateLiveStartButton();
+}
+
+function speechResultAlternatives(result) {
+  const alternatives = [];
+  for (let i = 0; i < result.length; i++) {
+    const transcript = (result[i]?.transcript || '').trim();
+    if (!transcript) continue;
+    alternatives.push({
+      transcript,
+      confidence: typeof result[i].confidence === 'number' ? result[i].confidence : null
+    });
+  }
+  return alternatives.length ? alternatives : [{ transcript: result[0]?.transcript || '', confidence: null }];
+}
+
+function evaluateSpeechCandidate(transcript) {
+  const candidate = normalizeSpokenText(transcript || '').trim();
+  const proposedText = `${liveFinalText} ${candidate}`.trim();
+  const baseAnalysis = liveRecovery?.active
+    ? analyzeLiveSpokenWords(spokenTokens(liveFinalText).slice(liveRecovery.spokenStart), liveRecovery.checkpoint)
+    : analyzeLiveTranscript(liveFinalText);
+  const analysis = liveRecovery?.active
+    ? analyzeLiveSpokenWords(spokenTokens(proposedText).slice(liveRecovery.spokenStart), liveRecovery.checkpoint)
+    : analyzeLiveTranscript(proposedText);
+  const progress = analysis.matchedCount - baseAnalysis.matchedCount;
+  const mismatchPenalty = analysis.mismatches.length * 1.15;
+  const waitBonus = analysis.waitingPartial ? 0.35 : 0;
+  return { analysis, baseAnalysis, progress, mismatchPenalty, waitBonus, candidateText: candidate };
+}
+
+function chooseBestSpeechCandidate(result) {
+  const alternatives = speechResultAlternatives(result);
+  let best = null;
+  for (const alt of alternatives) {
+    const evald = evaluateSpeechCandidate(alt.transcript);
+    const confidence = alt.confidence ?? 0.72;
+    const score = (evald.analysis.matchedCount * 5)
+      + (evald.progress * 12)
+      - (evald.mismatchPenalty * 4)
+      + (confidence * 2)
+      + evald.waitBonus;
+    const candidate = { ...alt, ...evald, score };
+    if (!best || candidate.score > best.score) best = candidate;
+  }
+  return best || { transcript: result[0]?.transcript || '', confidence: null, progress: 0, analysis: analyzeLiveTranscript(liveFinalText), mismatches: [] };
+}
+
+function shouldIgnoreLowConfidenceCandidate(choice, isFinal) {
+  if (!isFinal || !choice) return false;
+  const confidence = choice.confidence;
+  if (confidence === null || confidence === undefined) return false;
+  // Kalau confidence rendah dan tidak membuat progres, jangan masukkan ke final transcript.
+  // Ini mencegah satu salah tangkap browser membuat sistem nyuruh ulang terus.
+  return confidence < 0.38 && choice.progress <= 0 && choice.analysis.mismatches.length > 0;
 }
 
 function primeLiveAudio() {
@@ -948,6 +1162,9 @@ function prepareFreshLiveSession() {
   liveLastProgressAt = Date.now();
   liveStableMismatchStreak = 0;
   liveRecovery = null;
+  liveIgnoredLowConfidence = 0;
+  liveLastRecognitionConfidence = 1;
+  liveLastHeardSnippet = '';
 }
 
 function scheduleLiveRestart(reason = 'Mic sempat berhenti, menyambung lagi…') {
@@ -1003,15 +1220,27 @@ function startLiveSetor() {
   liveRecognition.lang = 'ar-SA';
   liveRecognition.continuous = true;
   liveRecognition.interimResults = true;
-  liveRecognition.maxAlternatives = 1;
+  liveRecognition.maxAlternatives = 5;
 
   liveRecognition.onresult = event => {
     liveLastSpeechAt = Date.now();
     let interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript;
-      if (event.results[i].isFinal) liveFinalText += ' ' + transcript;
-      else interim += ' ' + transcript;
+      const result = event.results[i];
+      const choice = chooseBestSpeechCandidate(result);
+      liveLastRecognitionConfidence = choice.confidence ?? liveLastRecognitionConfidence ?? 1;
+      liveLastHeardSnippet = choice.transcript || liveLastHeardSnippet;
+
+      if (result.isFinal) {
+        if (shouldIgnoreLowConfidenceCandidate(choice, true)) {
+          liveIgnoredLowConfidence += 1;
+          continue;
+        }
+        liveFinalText += ' ' + (choice.candidateText || choice.transcript);
+        liveIgnoredLowConfidence = 0;
+      } else {
+        interim += ' ' + (choice.candidateText || choice.transcript);
+      }
     }
     liveInterimText = interim;
     renderLiveReveal();

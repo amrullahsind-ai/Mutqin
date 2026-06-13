@@ -452,6 +452,13 @@ button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
   border-color: #bbf7d0;
 }
 
+.live-correction.listen {
+  background: linear-gradient(135deg, rgba(219, 234, 254, .96), rgba(236, 253, 245, .96));
+  color: #075985;
+  border-color: #93c5fd;
+}
+
+
 /* Polished UI/UX layer — Mutqin Gemini edition */
 :root {
   --bg: #eef8f4;

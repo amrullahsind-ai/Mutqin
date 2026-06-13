@@ -51,6 +51,9 @@ let liveAudioContext = null;
 let liveLastErrorCue = 0;
 let liveSoundEnabled = true;
 let liveRecovery = null;
+let liveShouldListen = false;
+let liveRestartTimer = null;
+let liveLastSpeechAt = 0;
 
 const $ = (id) => document.getElementById(id);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -269,6 +272,7 @@ function renderAll() {
   renderNavigator();
   renderPlannerSummary();
   renderCoachChat();
+  updateLiveStartButton();
 }
 
 function renderStats() {
@@ -708,8 +712,8 @@ function clearLiveRecoveryTo(matchedCount) {
   liveStableMismatchStreak = 0;
   liveFinalText = canonicalLiveTextUntil(liveLastMatchCount);
   liveInterimText = '';
+  updateLiveStartButton();
 }
-
 function acceptLivePoint() {
   const text = `${liveFinalText} ${liveInterimText}`.trim();
   const analysis = analyzeLiveTranscript(text, liveRecovery?.checkpoint || 0);
@@ -717,6 +721,7 @@ function acceptLivePoint() {
   clearLiveRecoveryTo(next);
   $('liveCorrection').className = 'live-correction hidden';
   renderLiveReveal();
+  if (liveShouldListen && !liveRecognition) scheduleLiveRestart('Menyambung mic dari titik koreksi…');
 }
 
 function rewindLivePoint() {
@@ -725,6 +730,7 @@ function rewindLivePoint() {
   $('liveCorrection').className = 'live-correction';
   $('liveCorrection').innerHTML = `<strong>Ulang dari sini:</strong><br><span class="arabic-inline">${escapeHtml(livePhraseFrom(checkpoint, 3))}</span><br><small>Setelah potongan ini terbaca benar, sistem lanjut otomatis.</small>`;
   renderLiveReveal();
+  if (liveShouldListen && !liveRecognition) scheduleLiveRestart('Menyambung mic dari titik aman…');
 }
 
 
@@ -836,6 +842,7 @@ function renderLiveReveal() {
     if ($('liveOrb').classList.contains('listening')) $('liveOrb').className = 'live-orb listening';
   }
   liveLastMatchCount = Math.max(liveLastMatchCount, analysis.matchedCount);
+  updateLiveStartButton();
 }
 
 function primeLiveAudio() {
@@ -924,21 +931,67 @@ function maybeSpeakLiveCorrection(message) {
   window.speechSynthesis.speak(utter);
 }
 
-function startLiveSetor() {
-  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Recognition) {
-    alert('Live Setor butuh browser yang mendukung SpeechRecognition. Coba Chrome/Edge. Untuk versi gratis, mode ini tetap pakai transkrip browser; Gemini dipakai untuk analisis setelah setoran.');
-    return;
-  }
-  if (liveRecognition) stopLiveSetor();
+function hasLiveProgress() {
+  return Boolean((liveFinalText || '').trim() || liveLastMatchCount > 0 || liveRecovery?.active);
+}
+
+function updateLiveStartButton() {
+  const btn = $('startLiveSetor');
+  if (!btn) return;
+  btn.textContent = hasLiveProgress() ? 'Lanjutkan Setoran' : 'Mulai Live Setor';
+}
+
+function prepareFreshLiveSession() {
   liveFinalText = '';
   liveInterimText = '';
   liveLastMatchCount = 0;
   liveLastProgressAt = Date.now();
   liveStableMismatchStreak = 0;
   liveRecovery = null;
+}
+
+function scheduleLiveRestart(reason = 'Mic sempat berhenti, menyambung lagi…') {
+  if (!liveShouldListen) return;
+  clearTimeout(liveRestartTimer);
+  $('startLiveSetor').disabled = true;
+  $('stopLiveSetor').disabled = false;
+  $('liveStatus').textContent = reason;
+  if (!$('liveOrb').classList.contains('good')) $('liveOrb').className = 'live-orb listening';
+  liveRestartTimer = setTimeout(() => {
+    if (liveShouldListen && !liveRecognition) startLiveSetor();
+  }, 700);
+}
+
+function startLiveSetor() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    alert('Live Setor butuh browser yang mendukung SpeechRecognition. Coba Chrome/Edge. Untuk versi gratis, mode ini tetap pakai transkrip browser; Gemini dipakai untuk analisis setelah setoran.');
+    return;
+  }
+
+  // Kalau mic masih aktif, jangan reset apa pun.
+  if (liveRecognition) {
+    $('liveStatus').textContent = 'Mic masih aktif. Lanjutkan bacaanmu dari titik terakhir.';
+    return;
+  }
+
+  const resumeMode = hasLiveProgress();
+  if (!resumeMode) prepareFreshLiveSession();
+  else {
+    // Saat lanjut, buang interim lama saja. Final/progress tetap dipertahankan.
+    liveInterimText = '';
+    liveStableMismatchStreak = 0;
+    liveLastProgressAt = Date.now();
+  }
+
+  liveShouldListen = true;
+  liveLastSpeechAt = Date.now();
+  clearTimeout(liveRestartTimer);
+
   $('liveModePill').textContent = 'Mendengar';
-  $('liveStatus').textContent = 'Sedang mendengar. Baca dari hafalan, jangan melihat mushaf.';
+  $('liveStatus').textContent = resumeMode
+    ? 'Melanjutkan setoran. Baca dari titik terakhir/koreksi, bukan dari awal.'
+    : 'Sedang mendengar. Baca dari hafalan, jangan melihat mushaf.';
   $('liveOrb').className = 'live-orb listening';
   $('startLiveSetor').disabled = true;
   $('stopLiveSetor').disabled = false;
@@ -951,7 +1004,9 @@ function startLiveSetor() {
   liveRecognition.continuous = true;
   liveRecognition.interimResults = true;
   liveRecognition.maxAlternatives = 1;
+
   liveRecognition.onresult = event => {
+    liveLastSpeechAt = Date.now();
     let interim = '';
     for (let i = event.resultIndex; i < event.results.length; i++) {
       const transcript = event.results[i][0].transcript;
@@ -959,48 +1014,89 @@ function startLiveSetor() {
       else interim += ' ' + transcript;
     }
     liveInterimText = interim;
-    const full = `${liveFinalText} ${liveInterimText}`.trim();
     renderLiveReveal();
   };
+
   liveRecognition.onerror = e => {
-    $('liveStatus').textContent = `Live transkrip terganggu: ${e.error || 'error'}. Kamu bisa mulai ulang.`;
+    const err = e.error || 'error';
+    // Di mobile, error no-speech sering hanya jeda suara, bukan gagal total.
+    if (['no-speech', 'audio-capture', 'network'].includes(err)) {
+      $('liveStatus').textContent = err === 'no-speech'
+        ? 'Belum menangkap suara. Lanjutkan, mic akan disambung otomatis.'
+        : 'Koneksi mic/transkrip sempat terganggu. Menyambung ulang…';
+      $('liveOrb').className = 'live-orb warn';
+      return;
+    }
+    if (['not-allowed', 'service-not-allowed', 'aborted'].includes(err)) {
+      liveShouldListen = false;
+      $('liveStatus').textContent = `Mic berhenti: ${err}. Izinkan microphone lalu klik Lanjutkan Setoran.`;
+      $('liveOrb').className = 'live-orb warn';
+      $('startLiveSetor').disabled = false;
+      $('stopLiveSetor').disabled = true;
+      updateLiveStartButton();
+      return;
+    }
+    $('liveStatus').textContent = `Live transkrip terganggu: ${err}. Kalau berhenti, klik Lanjutkan Setoran.`;
     $('liveOrb').className = 'live-orb warn';
   };
+
   liveRecognition.onend = () => {
+    liveRecognition = null;
+    liveInterimText = '';
+
+    // Chrome mobile sering menghentikan SpeechRecognition sendiri. Jangan reset progress;
+    // sambung ulang otomatis selama user belum menekan Stop.
+    if (liveShouldListen) {
+      scheduleLiveRestart('Mic sempat berhenti sendiri, menyambung lagi dari titik terakhir…');
+      return;
+    }
+
     $('startLiveSetor').disabled = false;
     $('stopLiveSetor').disabled = true;
-    $('liveStatus').textContent = 'Live setoran berhenti.';
+    $('liveStatus').textContent = hasLiveProgress()
+      ? 'Live setoran berhenti. Klik Lanjutkan Setoran untuk meneruskan dari titik terakhir.'
+      : 'Live setoran berhenti.';
     if (!$('liveOrb').classList.contains('good')) $('liveOrb').className = 'live-orb';
+    updateLiveStartButton();
   };
-  liveRecognition.start();
-}
 
+  try {
+    liveRecognition.start();
+  } catch (err) {
+    liveRecognition = null;
+    scheduleLiveRestart('Mic belum siap, mencoba menyambung lagi…');
+  }
+  updateLiveStartButton();
+}
 function stopLiveSetor() {
+  liveShouldListen = false;
+  clearTimeout(liveRestartTimer);
   if (liveRecognition) {
     liveRecognition.stop();
     liveRecognition = null;
   }
   $('startLiveSetor').disabled = false;
   $('stopLiveSetor').disabled = true;
-  $('liveStatus').textContent = 'Live setoran dihentikan.';
+  $('liveStatus').textContent = hasLiveProgress()
+    ? 'Live setoran dijeda. Klik Lanjutkan Setoran untuk meneruskan dari titik terakhir.'
+    : 'Live setoran dihentikan.';
   if (!$('liveOrb').classList.contains('good')) $('liveOrb').className = 'live-orb';
+  updateLiveStartButton();
 }
-
 function resetLiveSetor() {
+  liveShouldListen = false;
+  clearTimeout(liveRestartTimer);
   if (liveRecognition) stopLiveSetor();
-  liveFinalText = '';
-  liveInterimText = '';
-  liveLastMatchCount = 0;
-  liveLastProgressAt = Date.now();
-  liveStableMismatchStreak = 0;
-  liveRecovery = null;
+  prepareFreshLiveSession();
   $('liveModePill').textContent = 'Standby';
   $('liveStatus').textContent = 'Belum mulai. Klik mulai lalu baca dari hafalan.';
   $('liveCorrection').className = 'live-correction hidden';
   $('liveOrb').className = 'live-orb';
+  $('startLiveSetor').disabled = false;
+  $('stopLiveSetor').disabled = true;
+  updateLiveStartButton();
   renderLiveReveal();
 }
-
 function liveHint() {
   const analysis = analyzeLiveTranscript(`${liveFinalText} ${liveInterimText}`.trim());
   const next = analysis.nextToken || analysis.tokens[0];

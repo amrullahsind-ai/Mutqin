@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b5e58" />
+  <title>Mutqin AI — Tahfizh Coach</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><span>م</span></div>
+        <div>
+          <h1>Mutqin AI</h1>
+          <p>Gemini tahfizh coach</p>
+        </div>
+      </div>
+      <nav class="nav">
+        <button data-view="today" class="active">Hari Ini</button>
+        <button data-view="hifzh">Hafalan Baru</button>
+        <button data-view="submit">Setor AI</button>
+        <button data-view="live">Live Setor</button>
+        <button data-view="murajaah">Murajaah</button>
+        <button data-view="map">Peta Hafalan</button>
+        <button data-view="coach">AI Coach</button>
+        <button data-view="settings">Target</button>
+      </nav>
+      <div class="sidebar-note">
+        <strong>Gemini mode</strong>
+        <span>Live Setor tetap gratis via browser. Gemini dipakai untuk transkrip rekaman, analisis setoran, dan coach.</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="hamburger" id="hamburger" aria-label="Buka menu">☰</button>
+        <div class="title-wrap">
+          <p class="eyebrow">بِسْمِ اللّٰهِ</p>
+          <h2 id="pageTitle">Hari Ini</h2>
+          <span class="ai-status">Gemini-ready · local-first</span>
+        </div>
+        <div class="top-actions">
+          <select id="surahSelect" title="Pilih surah"></select>
+          <button id="refreshBtn" class="ghost">Refresh</button>
+        </div>
+      </header>
+
+      <section class="status-strip">
+        <article>
+          <span>Ayat kuat</span>
+          <strong id="strongCount">0</strong>
+        </article>
+        <article>
+          <span>Rawan</span>
+          <strong id="weakCount">0</strong>
+        </article>
+        <article>
+          <span>Due murajaah</span>
+          <strong id="dueCount">0</strong>
+        </article>
+        <article>
+          <span>Streak</span>
+          <strong id="streakCount">0 hari</strong>
+        </article>
+      </section>
+
+      <section id="loading" class="loading hidden">
+        <div class="loader"></div>
+        <p>Mengambil teks dan audio Qur'an...</p>
+      </section>
+
+      <section id="errorBox" class="error-box hidden"></section>
+
+      <section id="view-today" class="view active">
+        <div class="grid two">
+          <article class="card hero-card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Agenda otomatis</p>
+                <h3>Sesi hari ini</h3>
+              </div>
+              <span class="pill" id="sessionEstimate">±25 menit</span>
+            </div>
+            <div id="todayPlan" class="plan-list"></div>
+            <button class="primary" data-jump="hifzh">Mulai Hafalan</button>
+          </article>
+
+          <article class="card coach-card">
+            <p class="eyebrow">Coach membaca progresmu</p>
+            <h3>Rekomendasi</h3>
+            <p id="coachSummary" class="coach-text">Belum ada data. Mulai dari target hafalan dan setor 1–2 ayat.</p>
+            <div class="mini-actions">
+              <button class="ghost" data-jump="submit">Setor sekarang</button>
+              <button class="ghost" data-jump="murajaah">Murajaah</button>
+            </div>
+          </article>
+        </div>
+
+        <article class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Ayat prioritas</p>
+              <h3>Yang perlu disentuh hari ini</h3>
+            </div>
+          </div>
+          <div id="priorityVerses" class="verse-row-list"></div>
+        </article>
+
+        <article class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Tahfizh navigator</p>
+              <h3>Target & peta fokus</h3>
+            </div>
+          </div>
+          <div id="todayNavigator" class="navigator-grid"></div>
+        </article>
+      </section>
+
+      <section id="view-hifzh" class="view">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Guided memorization</p>
+                <h3>Bangun hafalan baru</h3>
+              </div>
+              <span class="pill" id="activeAyahPill">Ayat -</span>
+            </div>
+            <div class="ayah-picker">
+              <button id="prevAyah" class="ghost">← Sebelumnya</button>
+              <select id="ayahSelect"></select>
+              <button id="nextAyah" class="ghost">Berikutnya →</button>
+            </div>
+            <div class="quran-card">
+              <p id="ayahArabic" class="arabic"></p>
+              <p id="ayahTranslation" class="translation"></p>
+            </div>
+            <div class="stepper" id="memorizeSteps"></div>
+            <div class="mini-actions wrap">
+              <button id="playAyah" class="primary">Dengar qari</button>
+              <button id="hideModeBtn" class="ghost">Tutup mushaf</button>
+              <button id="missingWordsBtn" class="ghost">Latihan ayat hilang</button>
+              <button id="markMemorizedBtn" class="success">Tandai kuat</button>
+            </div>
+          </article>
+
+          <article class="card drill-card">
+            <p class="eyebrow">Latihan recall</p>
+            <h3 id="drillTitle">Tutup mushaf</h3>
+            <div id="drillBox" class="drill-box">
+              <p>Pilih “Tutup mushaf” atau “Latihan ayat hilang” untuk mulai menguji hafalan tanpa melihat penuh.</p>
+            </div>
+            <div class="mini-actions wrap">
+              <button id="showAnswerBtn" class="ghost">Lihat jawaban</button>
+              <button id="againDrillBtn" class="ghost">Acak ulang</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-submit" class="view">
+        <div class="grid two">
+          <article class="card">
+            <div class="card-head">
+              <div>
+                <p class="eyebrow">Setor mandiri</p>
+                <h3>Setor ke Gemini</h3>
+              </div>
+              <span class="pill">Audio + transkrip</span>
+            </div>
+            <div class="range-grid">
+              <label>Mulai ayat
+                <select id="submitStart"></select>
+              </label>
+              <label>Sampai ayat
+                <select id="submitEnd"></select>
+              </label>
+            </div>
+            <div class="submit-target">
+              <p class="eyebrow">Target setoran</p>
+              <div id="submitTarget" class="target-hidden">Teks disembunyikan. Baca dari hafalanmu.</div>
+              <button id="toggleSubmitTarget" class="ghost">Lihat/sembunyikan target</button>
+            </div>
+            <div class="recorder-box">
+              <div class="record-light" id="recordLight"></div>
+              <p id="recordStatus">Belum merekam</p>
+              <div class="mini-actions wrap">
+                <button id="startRecordBtn" class="primary">Mulai rekam</button>
+                <button id="stopRecordBtn" class="danger" disabled>Stop</button>
+                <button id="startSpeechBtn" class="ghost">Transkrip browser</button>
+                <button id="apiTranscribeBtn" class="ghost gemini-btn">Transkrip Gemini</button>
+              </div>
+              <audio id="audioPlayback" controls class="hidden"></audio>
+            </div>
+            <label class="textarea-label">Transkrip bacaanmu / hasil speech-to-text
+              <textarea id="submissionText" rows="5" placeholder="Kalau speech-to-text tidak jalan, ketik hasil bacaanmu di sini untuk dianalisis."></textarea>
+            </label>
+            <div class="self-check">
+              <label>Kelancaran rasa kamu
+                <input id="fluencyRange" type="range" min="1" max="5" value="3" />
+              </label>
+              <label>Bantuan yang dipakai
+                <select id="helpUsed">
+                  <option value="0">Tidak ada bantuan</option>
+                  <option value="1">Lihat awal ayat</option>
+                  <option value="2">Lihat beberapa kata</option>
+                  <option value="3">Sering melihat teks</option>
+                </select>
+              </label>
+            </div>
+            <div class="mini-actions wrap wide-actions">
+              <button id="analyzeSubmission" class="primary">Analisis lokal</button>
+              <button id="apiAnalyzeSubmission" class="success gemini-btn">Analisis Gemini</button>
+            </div>
+          </article>
+
+          <article class="card">
+            <p class="eyebrow">Hasil analisis</p>
+            <h3>Diagnosis hafalan</h3>
+            <div id="analysisResult" class="analysis-empty">
+              Rekam/isi transkrip dulu, lalu klik analisis. Hasilnya akan memperbarui peta hafalan dan jadwal murajaah.
+            </div>
+          </article>
+        </div>
+      </section>
+
+
+      <section id="view-live" class="view">
+        <article class="card live-page-card">
+          <div class="card-head live-page-head">
+            <div>
+              <p class="eyebrow">Real-time setoran</p>
+              <h3>Live Setor — Mushaf Live</h3>
+            </div>
+            <span class="pill" id="liveModePill">Standby</span>
+          </div>
+
+          <div class="range-grid live-range-grid">
+            <label>Mulai ayat
+              <select id="liveStart"></select>
+            </label>
+            <label>Sampai ayat
+              <select id="liveEnd"></select>
+            </label>
+          </div>
+
+          <div class="live-instruction compact">
+            <strong>Mode setor dibuat fokus seperti satu halaman mushaf.</strong>
+            <span>Transkrip sistem tidak ditampilkan. Yang terlihat hanya mushaf live. Saat kamu membaca, kata yang berhasil ditangkap akan langsung muncul pada mushaf. Jika ada indikasi melenceng, AI memberi koreksi suara dan notifikasi ringan.</span>
+          </div>
+
+          <div class="live-meter">
+            <div class="live-orb" id="liveOrb"></div>
+            <div>
+              <p id="liveStatus">Belum mulai. Klik mulai lalu baca dari hafalan.</p>
+              <small id="liveExpected">Mushaf akan terbuka mengikuti bacaanmu.</small>
+            </div>
+          </div>
+
+          <div class="mini-actions wrap wide-actions live-controls">
+            <button id="startLiveSetor" class="primary">Mulai Live Setor</button>
+            <button id="stopLiveSetor" class="danger" disabled>Stop</button>
+            <button id="resetLiveSetor" class="ghost">Ulang dari awal</button>
+            <button id="liveFocusBtn" class="ghost">Mode fokus</button>
+            <button id="liveHintBtn" class="ghost">Bantuan awal ayat</button>
+            <button id="saveLiveSetor" class="success">Simpan hasil</button>
+          </div>
+
+          <div class="live-mushaf-wrap">
+            <div class="live-mushaf-topbar">
+              <div>
+                <p class="eyebrow">Mushaf live</p>
+                <h4>Yang muncul hanya yang sudah kamu baca</h4>
+              </div>
+            </div>
+            <div id="liveReveal" class="live-reveal full-mushaf">
+              <p class="analysis-empty">Mulai live setoran untuk membuka mushaf secara bertahap mengikuti bacaanmu.</p>
+            </div>
+            <div id="liveCorrection" class="live-correction hidden"></div>
+          </div>
+        </article>
+      </section>
+
+      <section id="view-murajaah" class="view">
+        <article class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Spaced murajaah</p>
+              <h3>Daftar review hari ini</h3>
+            </div>
+            <button id="completeAllReview" class="ghost">Tandai selesai semua</button>
+          </div>
+          <div id="murajaahOverview" class="navigator-grid compact"></div>
+          <div id="reviewList" class="review-list"></div>
+        </article>
+      </section>
+
+      <section id="view-map" class="view">
+        <article class="card">
+          <div class="card-head">
+            <div>
+              <p class="eyebrow">Peta kualitas</p>
+              <h3>Kondisi hafalan per ayat</h3>
+            </div>
+            <div class="legend">
+              <span><i class="dot new"></i>Baru</span>
+              <span><i class="dot strong"></i>Kuat</span>
+              <span><i class="dot shaky"></i>Rawan</span>
+              <span><i class="dot weak"></i>Lemah</span>
+            </div>
+          </div>
+          <div id="mapSummary" class="navigator-grid compact"></div>
+          <div id="memoryMap" class="memory-map"></div>
+        </article>
+        <article class="card">
+          <p class="eyebrow">Bank kesalahan</p>
+          <h3>Catatan yang sering muncul</h3>
+          <div id="mistakeBank" class="mistake-bank"></div>
+        </article>
+      </section>
+
+      <section id="view-coach" class="view">
+        <div class="grid two">
+          <article class="card">
+            <p class="eyebrow">AI Coach</p>
+            <h3>Tanya strategi hafalan</h3>
+            <div id="coachChat" class="chat-box"></div>
+            <div class="chat-input">
+              <input id="coachInput" placeholder="Contoh: aku sering lupa sambungan ayat" />
+              <button id="askCoach" class="primary">Kirim</button>
+            </div>
+          </article>
+          <article class="card">
+            <p class="eyebrow">Metode bawaan</p>
+            <h3>Latihan yang tersedia</h3>
+            <div class="method-list">
+              <button data-prompt="Aku mau hafal ayat baru dengan metode 3-3-1">Metode 3-3-1</button>
+              <button data-prompt="Aku lemah di sambungan antar ayat">Sambung ayat</button>
+              <button data-prompt="Aku sering tertukar ayat mirip">Mutasyabihat</button>
+              <button data-prompt="Aku ingin target realistis sepekan">Target pekanan</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-settings" class="view">
+        <article class="card settings-card">
+          <p class="eyebrow">Personalisasi</p>
+          <h3>Target hafalan</h3>
+          <div class="settings-grid">
+            <label>Nama panggilan
+              <input id="userName" placeholder="Namamu" />
+            </label>
+            <label>Target ayat baru per hari
+              <input id="dailyNew" type="number" min="1" max="20" value="2" />
+            </label>
+            <label>Target murajaah per hari (ayat)
+              <input id="dailyMurajaah" type="number" min="1" max="50" value="5" />
+            </label>
+            <label>Target pekanan (ayat baru)
+              <input id="weeklyGoal" type="number" min="1" max="100" value="10" />
+            </label>
+            <label>Durasi sesi harian/menit
+              <input id="dailyMinutes" type="number" min="10" max="180" value="30" />
+            </label>
+            <label>Milestone besar
+              <input id="milestoneName" placeholder="Contoh: Juz 30 mutqin" />
+            </label>
+            <label>Target selesai milestone
+              <input id="targetDate" type="date" />
+            </label>
+            <label>Level saat ini
+              <select id="levelSelect">
+                <option value="beginner">Pemula</option>
+                <option value="steady">Sudah terbiasa</option>
+                <option value="advanced">Hafalan banyak</option>
+              </select>
+            </label>
+          </div>
+          <div id="plannerSummary" class="planner-summary"></div>
+          <button id="saveSettings" class="primary">Simpan target</button>
+          <button id="resetData" class="danger subtle">Reset data aplikasi</button>
+        </article>
+      </section>
+    </main>
+  </div>
+
+
+
+  <nav class="mobile-bottom-nav" aria-label="Navigasi mobile">
+    <button data-view="today" class="active"><span>🏠</span><small>Hari Ini</small></button>
+    <button data-view="hifzh"><span>📖</span><small>Hafalan</small></button>
+    <button data-view="live"><span>🎙️</span><small>Setor</small></button>
+    <button data-view="murajaah"><span>🔁</span><small>Murajaah</small></button>
+    <button data-view="map"><span>🗺️</span><small>Peta</small></button>
+  </nav>
+  <script src="app.js"></script>
+<div class="ambient-orb orb-a"></div>
+  <div class="ambient-orb orb-b"></div>
+</body>
+</html>

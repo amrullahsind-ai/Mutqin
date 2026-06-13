@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: mutqin-ai-gemini
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_ANALYSIS_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_TRANSCRIBE_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_COACH_MODEL
+        value: gemini-2.5-flash
